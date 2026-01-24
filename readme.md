@@ -6,6 +6,20 @@ This repository is a **workflow-centric autonomous-agent workbench** built aroun
 
 ---
 
+## Visual index (animated + static)
+
+- Static diagrams are embedded inline (Mermaid).
+- Optional animated assets live in `docs/diagrams/`:
+  - `docs/diagrams/architecture.gif` — overall runtime “movie”
+  - `docs/diagrams/fanout.gif` — parent → many children fan-out
+  - `docs/diagrams/queue.gif` — rate-limited queue draining visualization
+  - `docs/diagrams/retry.gif` — retry/backoff loop
+  - `docs/diagrams/human_gate.gif` — approval gate pause/resume
+
+See: [`docs/diagrams/README.md`](docs/diagrams/README.md)
+
+---
+
 ## What Restack is (and why it exists): a short story
 
 Modern “AI agents” fail in boring ways:
@@ -20,6 +34,34 @@ Restack was created to eliminate that systems tax by turning “agent behavior�
 - side effects are isolated into functions with retry policies,
 - execution is persisted (so crashes don’t lose progress),
 - and concurrency/rate limits are enforced as *runtime constraints* instead of application-level hacks.
+
+```mermaid
+flowchart LR
+  subgraph Dev["Developer / Local Machine"]
+    UI["Restack UI :5233"]
+    API["Restack API :6233"]
+    Engine["Restack Engine"]
+    Worker["Python worker/services\n(register workflows + functions)"]
+    Scheduler["Schedulers\n(schedule_workflow.py / schedule_scale.py / interval)"]
+  end
+
+  subgraph Ext["External Systems"]
+    LLM["LLM Provider\n(LMStudio / OpenAI-compatible / hosted)"]
+    Email["Email Provider\n(SendGrid)"]
+    FinAPI["fintech_app (FastAPI)\nSystem-of-record API"]
+  end
+
+  UI --> Engine
+  API --> Engine
+  Scheduler --> API
+  Worker <--> Engine
+
+  Worker --> LLM
+  Worker --> Email
+  Worker --> FinAPI
+```
+
+![Optional animation: overall runtime](docs/diagrams/architecture.gif)
 
 ### Who invented Restack?
 Restack is built and maintained by the **Restack team** (Restack.io). In this repo, you’ll see the engine distributed as a Docker image (`ghcr.io/restackio/restack:main`) and examples written against their SDK. The canonical provenance lives in their public organization and releases:
@@ -59,6 +101,20 @@ You’re using Restack here as an **agent substrate**: not “one chatbot”, bu
 - route uncertain steps through a human review loop,
 - and keep typed, testable artifacts (schemas, validations).
 
+```mermaid
+flowchart TB
+  Goal["Goal: Reliable autonomy\n(durable state + explicit IO + observable execution)"]
+  A["Deterministic control-flow\n(workflows)"]
+  B["Side-effects isolated\n(functions)"]
+  C["Backpressure + throttling\n(task queues)"]
+  D["Human gating\n(pause/resume)"]
+  E["Typed artifacts\n(schema validation)"]
+  Goal --> A --> B
+  Goal --> C
+  Goal --> D
+  Goal --> E
+```
+
 In other words:
 
 > This repository treats “autonomy” as an engineering problem in **orchestration, correctness, and operational semantics**, not a prompt-engineering exercise.
@@ -76,11 +132,50 @@ The fundamental design pattern is consistent:
 - **Services/Workers** register those workflows/functions with the engine.
 - **Schedulers/Clients** trigger workflows (single-run, burst scale, intervals).
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Client as Client/Scheduler
+  participant Engine as Restack Engine
+  participant Worker as Worker/Service
+  Client->>Engine: start_workflow(name, input)
+  Engine->>Worker: dispatch step(function)
+  Worker-->>Engine: result / error
+  Engine-->>Engine: persist state + apply retry policy
+  Engine-->>Client: workflow result (eventual)
+```
+
 ---
 
 ## How the examples interlink (the conceptual dependency graph)
 
 Think of the repo as layers; later examples reuse primitives introduced earlier.
+
+```mermaid
+flowchart TB
+  Base["Layer 1\nquickstart / openai_greet"]
+  Compose["Layer 2\nchild_workflows"]
+  Integrate["Layer 3\nemail_sender"]
+  Pipeline["Layer 4\naudio_transcript"]
+  Typed["Layer 4b\npdf_pydantic"]
+  Human["Layer 5\nhuman_loop"]
+  Agent["Layer 6\nre_act"]
+  Prod["Layer 7\nproduction_demo"]
+  Fintech["Parallel\nfintech_app (FastAPI)"]
+
+  Base --> Compose
+  Base --> Integrate
+  Base --> Pipeline
+  Base --> Typed
+  Human --> Agent
+  Compose --> Prod
+  Integrate --> Prod
+  Agent --> Prod
+  Fintech -. "system-of-record API target" .- Prod
+  Fintech -. "high-stakes actions\nrequire gates" .- Human
+```
+
+![Optional animation: fan-out](docs/diagrams/fanout.gif)
 
 ### Layer 0 — Runtime substrate (Restack engine + worker)
 All Restack-backed examples assume:
@@ -107,6 +202,8 @@ Adds hierarchical decomposition: parent → child workflows. This is the orchest
 
 A canonical reliability demo: external provider integration plus induced failure to show automatic retries.
 
+![Optional animation: retries](docs/diagrams/retry.gif)
+
 ### Layer 4 — Pipelines and typed IO
 - `audio_transcript/`
 - `pdf_pydantic/` (structured extraction/validation)
@@ -117,6 +214,8 @@ These illustrate multi-step transforms and schema-bound intermediate artifacts�
 - `human_loop/`
 
 Adds supervisory gating (pause/resume, approval flows). This becomes non-optional in regulated or high-stakes domains.
+
+![Optional animation: human gate](docs/diagrams/human_gate.gif)
 
 ### Layer 6 — Agent loop experiments (ReAct-like)
 - `re_act/`
@@ -145,6 +244,29 @@ A conventional FastAPI backend representing the “system of record” an agent 
 - each workflow has three steps; steps 2–3 are LLM calls,
 - enforce a rate limit (e.g., 1 concurrent call / sec) centrally via the service configuration.
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Parent as Parent Workflow
+  participant Engine as Restack Engine
+  participant Q as LLM Task Queue\n(rate_limit=1)
+  participant Worker as Worker (LLM funcs)
+  participant LLM as LLM Provider
+
+  loop fan-out N children
+    Parent->>Engine: start ChildWorkflow(i)
+  end
+
+  Note over Engine,Q: Backpressure enforced centrally
+  Engine->>Q: enqueue llm_generate(i)
+  Q->>Worker: dispatch next (1 at a time)
+  Worker->>LLM: call model
+  LLM-->>Worker: response
+  Worker-->>Engine: step result persisted
+```
+
+![Optional animation: queue draining under rate limit](docs/diagrams/queue.gif)
+
 This replaces ad-hoc approaches (Celery queues, semaphores, middleware throttles) with **engine-level scheduling**. The Restack UI then provides per-step queue time, execution time, and retry counts—turning performance and reliability into visible, measurable quantities.
 
 If you want to build an autonomous agent that survives production traffic, this directory is the reference point.
@@ -158,6 +280,15 @@ If you want to build an autonomous agent that survives production traffic, this 
 - Fintech is a high-stakes domain with strict correctness/audit constraints.
 - It forces you to model idempotency, authorization boundaries, and “source of truth” data.
 - It’s the natural target for workflow-driven automation (KYC, reconciliation, fraud triage, dispute workflows).
+
+```mermaid
+flowchart LR
+  W["Restack workflows\n(orchestration/control-plane)"] -->|typed requests| API["fintech_app (FastAPI)\n(domain invariants + storage)"]
+  W -->|notify| Email["email_sender"]
+  W -->|extract/validate| Docs["pdf_pydantic"]
+  W -->|gate| Human["human_loop"]
+  W -->|evaluate under throttling| LLMQ["production_demo queues"]
+```
 
 **How it interlinks:**
 - Restack workflows (e.g., human gating + schema validation + notification + rate-limited LLM evaluation) should call into this API rather than mutate state ad hoc.
