@@ -87,6 +87,18 @@ class User(UserBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+class NotificationBase(BaseModel):
+    title: str
+    message: str
+    type: str
+
+class Notification(NotificationBase):
+    id: int
+    read: bool
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 class Pool(PoolBase):
     id: int
     participants: List[User] = []
