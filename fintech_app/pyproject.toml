@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "fintech-app"
+version = "0.1.0"
+description = ""
+authors = ["Jules"]
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.104.1"
+uvicorn = "^0.24.0.post1"
+pydantic = "^2.5.2"
+python-dotenv = "^1.0.0"
+restack-ai = "^0.0.52"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+httpx = "^0.25.2"
