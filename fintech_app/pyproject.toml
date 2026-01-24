@@ -14,7 +14,6 @@ python-dotenv = "^1.0.0"
 restack-ai = "^0.0.52"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
-bcrypt = "==3.2.0"
 sqlalchemy = "^2.0.23"
 pydantic-settings = "^2.1.0"
 

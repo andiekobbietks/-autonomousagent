@@ -14,11 +14,14 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+    referral_code = Column(String, unique=True, index=True)
+    referred_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     wallet = relationship("Wallet", back_populates="owner", uselist=False)
     contributions = relationship("Contribution", back_populates="user")
     pools = relationship("Pool", secondary=user_pool_association, back_populates="participants")
     notifications = relationship("Notification", back_populates="user")
+    referrals = relationship("Referral", foreign_keys="[Referral.referrer_id]", back_populates="referrer")
 
 class Wallet(Base):
     __tablename__ = "wallets"
@@ -86,3 +89,14 @@ class Notification(Base):
     timestamp = Column(DateTime)
 
     user = relationship("User", back_populates="notifications")
+
+class Referral(Base):
+    __tablename__ = "referrals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"))
+    referred_id = Column(Integer, ForeignKey("users.id"))
+    status = Column(String, default="pending") # pending, complete
+    reward = Column(Float, default=10.0)
+
+    referrer = relationship("User", back_populates="referrals", foreign_keys=[referrer_id])
