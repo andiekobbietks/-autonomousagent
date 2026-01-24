@@ -9,6 +9,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    referral_code: Optional[str] = None
 
 class UserLogin(BaseModel):
     username: str
@@ -84,6 +85,7 @@ class User(UserBase):
     id: int
     wallet: Optional[Wallet] = None
     contributions: List[Contribution] = []
+    referral_code: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -102,5 +104,14 @@ class Notification(NotificationBase):
 class Pool(PoolBase):
     id: int
     participants: List[User] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+class Referral(BaseModel):
+    id: int
+    referrer_id: int
+    referred_id: int
+    status: str
+    reward: float
 
     model_config = ConfigDict(from_attributes=True)

@@ -8,16 +8,17 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
 
 models.Base.metadata.create_all(bind=engine)
 
+from .config import settings
+
 # JWT settings
-SECRET_KEY = os.getenv("SECRET_KEY")
-if not SECRET_KEY:
-    raise ValueError("No SECRET_KEY set for JWT encoding")
+SECRET_KEY = settings.secret_key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -65,6 +66,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
+def generate_referral_code(db: Session):
+    while True:
+        code = secrets.token_urlsafe(6).upper()
+        if not db.query(models.User).filter(models.User.referral_code == code).first():
+            return code
+
 def create_notification(db: Session, user_id: int, title: str, message: str, type: str):
     db_notification = models.Notification(
         user_id=user_id,
@@ -87,11 +94,33 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    referred_by_user = None
+    if user.referral_code:
+        referred_by_user = db.query(models.User).filter(models.User.referral_code == user.referral_code).first()
+        if not referred_by_user:
+            raise HTTPException(status_code=400, detail="Invalid referral code")
+
     hashed_password = pwd_context.hash(user.password)
-    db_user = models.User(email=user.email, username=user.username, hashed_password=hashed_password)
+    referral_code = generate_referral_code(db)
+    db_user = models.User(
+        email=user.email,
+        username=user.username,
+        hashed_password=hashed_password,
+        referral_code=referral_code,
+        referred_by=referred_by_user.id if referred_by_user else None
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    if referred_by_user:
+        referral = models.Referral(
+            referrer_id=referred_by_user.id,
+            referred_id=db_user.id
+        )
+        db.add(referral)
+        db.commit()
     # Also create a wallet for the new user
     wallet = models.Wallet(user_id=db_user.id, balance=0.0)
     db.add(wallet)
@@ -277,6 +306,10 @@ def contribute_to_sprint(sprint_id: int, contribution: schemas.ContributionCreat
 @app.get("/notifications", response_model=List[schemas.Notification])
 def get_notifications(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.Notification).filter(models.Notification.user_id == current_user.id).all()
+
+@app.get("/referrals", response_model=List[schemas.Referral])
+def get_referrals(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Referral).filter(models.Referral.referrer_id == current_user.id).all()
 
 @app.post("/notifications/{notification_id}/read", response_model=schemas.Notification)
 def mark_notification_as_read(notification_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
