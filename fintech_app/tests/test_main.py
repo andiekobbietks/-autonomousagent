@@ -166,3 +166,34 @@ def test_create_and_manage_pool(client):
     leave_response = client.post(f"/pools/{pool_id}/leave", headers=headers)
     assert leave_response.status_code == 200
     assert len(leave_response.json()["participants"]) == 0
+
+def test_notifications(client):
+    token = get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Initial notifications check
+    response = client.get("/notifications", headers=headers)
+    assert response.status_code == 200
+    initial_notification_count = len(response.json())
+
+    # Trigger a notification by joining a pool
+    pool_response = client.post(
+        "/pools",
+        json={"name": "Notification Test Pool", "total_amount": 100.0},
+        headers=headers,
+    )
+    pool_id = pool_response.json()["id"]
+    client.post(f"/pools/{pool_id}/join", headers=headers)
+
+    # Verify new notification
+    response = client.get("/notifications", headers=headers)
+    assert response.status_code == 200
+    notifications = response.json()
+    assert len(notifications) == initial_notification_count + 1
+    assert notifications[-1]["title"] == "Joined Pool"
+
+    # Mark notification as read
+    notification_id = notifications[-1]["id"]
+    response = client.post(f"/notifications/{notification_id}/read", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["read"] is True

@@ -18,6 +18,7 @@ class User(Base):
     wallet = relationship("Wallet", back_populates="owner", uselist=False)
     contributions = relationship("Contribution", back_populates="user")
     pools = relationship("Pool", secondary=user_pool_association, back_populates="participants")
+    notifications = relationship("Notification", back_populates="user")
 
 class Wallet(Base):
     __tablename__ = "wallets"
@@ -72,3 +73,16 @@ class Pool(Base):
     name = Column(String)
     total_amount = Column(Float)
     participants = relationship("User", secondary=user_pool_association, back_populates="pools")
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    title = Column(String)
+    message = Column(String)
+    type = Column(String)
+    read = Column(Boolean, default=False)
+    timestamp = Column(DateTime)
+
+    user = relationship("User", back_populates="notifications")

@@ -65,6 +65,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
+def create_notification(db: Session, user_id: int, title: str, message: str, type: str):
+    db_notification = models.Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type=type,
+        timestamp=datetime.now(timezone.utc)
+    )
+    db.add(db_notification)
+    db.commit()
+    db.refresh(db_notification)
+    return db_notification
+
 @app.get("/health")
 def read_root():
     return {"status": "ok"}
@@ -141,6 +154,16 @@ def create_transaction(wallet_id: int, transaction: schemas.TransactionCreate, d
     db.add(db_transaction)
     db.commit()
     db.refresh(db_transaction)
+
+    # Create notification
+    create_notification(
+        db=db,
+        user_id=current_user.id,
+        title=f"{transaction.type.capitalize()} Successful",
+        message=f"Your {transaction.type} of ${transaction.amount} was successful.",
+        type="success"
+    )
+
     return db_transaction
 
 @app.post("/pools", response_model=schemas.Pool)
@@ -174,6 +197,16 @@ def join_pool(pool_id: int, db: Session = Depends(get_db), current_user: models.
     pool.participants.append(current_user)
     db.commit()
     db.refresh(pool)
+
+    # Create notification
+    create_notification(
+        db=db,
+        user_id=current_user.id,
+        title="Joined Pool",
+        message=f"You have successfully joined the pool '{pool.name}'.",
+        type="info"
+    )
+
     return pool
 
 @app.post("/pools/{pool_id}/leave", response_model=schemas.Pool)
@@ -229,4 +262,31 @@ def contribute_to_sprint(sprint_id: int, contribution: schemas.ContributionCreat
     db.add(db_contribution)
     db.commit()
     db.refresh(db_contribution)
+
+    # Create notification
+    create_notification(
+        db=db,
+        user_id=current_user.id,
+        title="Contribution Successful",
+        message=f"Your contribution of ${contribution.amount} to the sprint '{sprint.name}' was successful.",
+        type="success"
+    )
+
     return db_contribution
+
+@app.get("/notifications", response_model=List[schemas.Notification])
+def get_notifications(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Notification).filter(models.Notification.user_id == current_user.id).all()
+
+@app.post("/notifications/{notification_id}/read", response_model=schemas.Notification)
+def mark_notification_as_read(notification_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    notification = db.query(models.Notification).filter(models.Notification.id == notification_id).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    if notification.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Operation not permitted")
+
+    notification.read = True
+    db.commit()
+    db.refresh(notification)
+    return notification
