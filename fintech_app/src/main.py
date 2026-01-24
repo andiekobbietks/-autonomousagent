@@ -1,14 +1,18 @@
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from typing import List
-from .models import User, Wallet, Pool, UserCreate, UserLogin, Transaction, TransactionCreate
+from sqlalchemy.orm import Session
+from . import models, schemas
+from .database import SessionLocal, engine
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+models.Base.metadata.create_all(bind=engine)
 
 # JWT settings
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -22,38 +26,27 @@ app = FastAPI()
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# In-memory database (for prototyping purposes) with hashed passwords
-db = {
-    "users": {
-        1: User(id=1, username="alexrivera", email="alex.rivera@example.com"),
-        2: User(id=2, username="jules", email="jules@example.com"),
-    },
-    "hashed_passwords": {
-        "alexrivera": pwd_context.hash("password123"),
-        "jules": pwd_context.hash("password456"),
-    },
-    "wallets": {
-        1: Wallet(id=1, user_id=1, balance=1240.50),
-    },
-    "pools": {
-        1: Pool(id=1, name="Tech Founders", total_amount=5000.00, participants=[1]),
-    },
-    "transactions": []
-}
-
 oauth2_scheme = HTTPBearer()
+
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: HTTPAuthorizationCredentials = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
@@ -67,12 +60,7 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(oauth2_
     except JWTError:
         raise credentials_exception
 
-    user = None
-    for u in db["users"].values():
-        if u.username == username:
-            user = u
-            break
-
+    user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception
     return user
@@ -81,36 +69,27 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(oauth2_
 def read_root():
     return {"status": "ok"}
 
-@app.get("/users/{user_id}", response_model=User)
-def get_user(user_id: int, current_user: User = Depends(get_current_user)):
-    user = db["users"].get(user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    if current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Operation not permitted")
-    return user
-
-@app.post("/users/register", response_model=User)
-def register_user(user: UserCreate):
-    for existing_user in db["users"].values():
-        if existing_user.email == user.email:
-            raise HTTPException(status_code=400, detail="Email already registered")
-
-    new_user_id = max(db["users"].keys() or [0]) + 1
-    new_user = User(id=new_user_id, username=user.username, email=user.email)
-    db["users"][new_user_id] = new_user
-    db["hashed_passwords"][user.username] = pwd_context.hash(user.password)
-    return new_user
+@app.post("/users/register", response_model=schemas.User)
+def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.email == user.email).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    hashed_password = pwd_context.hash(user.password)
+    db_user = models.User(email=user.email, username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    # Also create a wallet for the new user
+    wallet = models.Wallet(user_id=db_user.id, balance=0.0)
+    db.add(wallet)
+    db.commit()
+    db.refresh(wallet)
+    return db_user
 
 @app.post("/users/login")
-def login_for_access_token(user_login: UserLogin):
-    user = None
-    for u in db["users"].values():
-        if u.username == user_login.username:
-            user = u
-            break
-
-    if not user or not pwd_context.verify(user_login.password, db["hashed_passwords"].get(user.username)):
+def login_for_access_token(user_login: schemas.UserLogin, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == user_login.username).first()
+    if not user or not pwd_context.verify(user_login.password, user.hashed_password):
         raise HTTPException(
             status_code=401,
             detail="Incorrect username or password",
@@ -123,18 +102,27 @@ def login_for_access_token(user_login: UserLogin):
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/wallets/{wallet_id}", response_model=Wallet)
-def get_wallet(wallet_id: int, current_user: User = Depends(get_current_user)):
-    wallet = db["wallets"].get(wallet_id)
+@app.get("/users/{user_id}", response_model=schemas.User)
+def get_user(user_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Operation not permitted")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.get("/wallets/{wallet_id}", response_model=schemas.Wallet)
+def get_wallet(wallet_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    wallet = db.query(models.Wallet).filter(models.Wallet.id == wallet_id).first()
     if wallet is None:
         raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Operation not permitted")
     return wallet
 
-@app.post("/wallets/{wallet_id}/transactions", response_model=Transaction)
-def create_transaction(wallet_id: int, transaction: TransactionCreate, current_user: User = Depends(get_current_user)):
-    wallet = db["wallets"].get(wallet_id)
+@app.post("/wallets/{wallet_id}/transactions", response_model=schemas.Transaction)
+def create_transaction(wallet_id: int, transaction: schemas.TransactionCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    wallet = db.query(models.Wallet).filter(models.Wallet.id == wallet_id).first()
     if wallet is None:
         raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.user_id != current_user.id:
@@ -149,17 +137,96 @@ def create_transaction(wallet_id: int, transaction: TransactionCreate, current_u
     else:
         raise HTTPException(status_code=400, detail="Invalid transaction type")
 
-    new_transaction_id = len(db["transactions"]) + 1
-    new_transaction = Transaction(
-        id=new_transaction_id,
-        wallet_id=wallet_id,
-        amount=transaction.amount,
-        type=transaction.type,
-        timestamp=datetime.utcnow()
-    )
-    db["transactions"].append(new_transaction)
-    return new_transaction
+    db_transaction = models.Transaction(**transaction.model_dump(), wallet_id=wallet_id, timestamp=datetime.now(timezone.utc))
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+    return db_transaction
 
-@app.get("/pools", response_model=List[Pool])
-def get_pools(current_user: User = Depends(get_current_user)):
-    return list(db["pools"].values())
+@app.post("/pools", response_model=schemas.Pool)
+def create_pool(pool: schemas.PoolCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    db_pool = models.Pool(**pool.model_dump())
+    db.add(db_pool)
+    db.commit()
+    db.refresh(db_pool)
+    return db_pool
+
+@app.get("/pools", response_model=List[schemas.Pool])
+def get_pools(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Pool).all()
+
+@app.get("/pools/{pool_id}", response_model=schemas.Pool)
+def get_pool(pool_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    pool = db.query(models.Pool).filter(models.Pool.id == pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+    return pool
+
+@app.post("/pools/{pool_id}/join", response_model=schemas.Pool)
+def join_pool(pool_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    pool = db.query(models.Pool).filter(models.Pool.id == pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    if current_user in pool.participants:
+        raise HTTPException(status_code=400, detail="User already in pool")
+
+    pool.participants.append(current_user)
+    db.commit()
+    db.refresh(pool)
+    return pool
+
+@app.post("/pools/{pool_id}/leave", response_model=schemas.Pool)
+def leave_pool(pool_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    pool = db.query(models.Pool).filter(models.Pool.id == pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    if current_user not in pool.participants:
+        raise HTTPException(status_code=400, detail="User not in pool")
+
+    pool.participants.remove(current_user)
+    db.commit()
+    db.refresh(pool)
+    return pool
+
+@app.post("/sprints", response_model=schemas.Sprint)
+def create_sprint(sprint: schemas.SprintCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    db_sprint = models.Sprint(**sprint.model_dump(), current_amount=0.0)
+    db.add(db_sprint)
+    db.commit()
+    db.refresh(db_sprint)
+    return db_sprint
+
+@app.get("/sprints", response_model=List[schemas.Sprint])
+def get_sprints(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Sprint).all()
+
+@app.get("/sprints/{sprint_id}", response_model=schemas.Sprint)
+def get_sprint(sprint_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    sprint = db.query(models.Sprint).filter(models.Sprint.id == sprint_id).first()
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+    return sprint
+
+@app.post("/sprints/{sprint_id}/contribute", response_model=schemas.Contribution)
+def contribute_to_sprint(sprint_id: int, contribution: schemas.ContributionCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    sprint = db.query(models.Sprint).filter(models.Sprint.id == sprint_id).first()
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+
+    wallet = db.query(models.Wallet).filter(models.Wallet.user_id == current_user.id).first()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+
+    if wallet.balance < contribution.amount:
+        raise HTTPException(status_code=400, detail="Insufficient funds")
+
+    wallet.balance -= contribution.amount
+    sprint.current_amount += contribution.amount
+
+    db_contribution = models.Contribution(**contribution.model_dump(), sprint_id=sprint_id, user_id=current_user.id, timestamp=datetime.now(timezone.utc))
+    db.add(db_contribution)
+    db.commit()
+    db.refresh(db_contribution)
+    return db_contribution

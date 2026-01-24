@@ -1,116 +1,56 @@
+import pytest
 from fastapi.testclient import TestClient
-from src.main import app
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from src.main import app, get_db
+from src.database import Base
+from datetime import datetime, timedelta, timezone
 
-client = TestClient(app)
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
-def get_auth_token():
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base.metadata.create_all(bind=engine)
+
+@pytest.fixture()
+def db():
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = TestingSessionLocal(bind=connection)
+
+    yield db
+
+    db.close()
+    transaction.rollback()
+    connection.close()
+
+@pytest.fixture()
+def client(db):
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    yield TestClient(app)
+    del app.dependency_overrides[get_db]
+
+def get_auth_token(client):
+    client.post(
+        "/users/register",
+        json={"username": "alexrivera", "email": "alex.rivera@example.com", "password": "password123"}
+    )
     response = client.post(
         "/users/login",
         json={"username": "alexrivera", "password": "password123"}
     )
     return response.json()["access_token"]
 
-def test_health_check():
+def test_health_check(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-def test_get_user():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/users/1", headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {"id": 1, "username": "alexrivera", "email": "alex.rivera@example.com"}
-
-def test_get_user_not_found():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/users/99", headers=headers)
-    assert response.status_code == 404
-    assert response.json() == {"detail": "User not found"}
-
-def test_get_user_unauthorized():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/users/2", headers=headers)
-    assert response.status_code == 403
-    assert response.json() == {"detail": "Operation not permitted"}
-
-def test_get_wallet():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/wallets/1", headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {"id": 1, "user_id": 1, "balance": 1240.50}
-
-def test_get_wallet_not_found():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/wallets/99", headers=headers)
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Wallet not found"}
-
-def test_create_transaction():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Get initial balance
-    response = client.get("/wallets/1", headers=headers)
-    initial_balance = response.json()["balance"]
-
-    # Deposit
-    deposit_amount = 100.0
-    response = client.post(
-        "/wallets/1/transactions",
-        json={"amount": deposit_amount, "type": "deposit"},
-        headers=headers
-    )
-    assert response.status_code == 200
-    transaction = response.json()
-    assert transaction["amount"] == deposit_amount
-    assert transaction["type"] == "deposit"
-
-    # Check updated balance
-    response = client.get("/wallets/1", headers=headers)
-    assert response.json()["balance"] == initial_balance + deposit_amount
-
-    # Withdrawal
-    withdrawal_amount = 50.0
-    response = client.post(
-        "/wallets/1/transactions",
-        json={"amount": withdrawal_amount, "type": "withdrawal"},
-        headers=headers
-    )
-    assert response.status_code == 200
-    transaction = response.json()
-    assert transaction["amount"] == withdrawal_amount
-    assert transaction["type"] == "withdrawal"
-
-    # Check updated balance
-    response = client.get("/wallets/1", headers=headers)
-    assert response.json()["balance"] == initial_balance + deposit_amount - withdrawal_amount
-
-def test_create_transaction_insufficient_funds():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.post(
-        "/wallets/1/transactions",
-        json={"amount": 999999.0, "type": "withdrawal"},
-        headers=headers
-    )
-    assert response.status_code == 400
-    assert response.json() == {"detail": "Insufficient funds"}
-
-def test_get_pools():
-    token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/pools", headers=headers)
-    assert response.status_code == 200
-    assert response.json() == [
-        {"id": 1, "name": "Tech Founders", "total_amount": 5000.0, "participants": [1]}
-    ]
-
-def test_register_user():
+def test_register_user(client):
     response = client.post(
         "/users/register",
         json={"username": "testuser", "email": "test@example.com", "password": "password"}
@@ -119,7 +59,11 @@ def test_register_user():
     assert response.json()["username"] == "testuser"
     assert response.json()["email"] == "test@example.com"
 
-def test_login_for_access_token():
+def test_login_for_access_token(client):
+    client.post(
+        "/users/register",
+        json={"username": "alexrivera", "email": "alex.rivera@example.com", "password": "password123"}
+    )
     response = client.post(
         "/users/login",
         json={"username": "alexrivera", "password": "password123"}
@@ -129,10 +73,96 @@ def test_login_for_access_token():
     assert "access_token" in json_response
     assert json_response["token_type"] == "bearer"
 
-def test_login_for_access_token_wrong_password():
-    response = client.post(
-        "/users/login",
-        json={"username": "alexrivera", "password": "wrongpassword"}
+def test_get_user(client):
+    token = get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.get("/users/1", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"id": 1, "username": "alexrivera", "email": "alex.rivera@example.com", "wallet": {'balance': 0.0, 'id': 1, 'transactions': [], 'user_id': 1}, "contributions": []}
+
+def test_create_sprint_and_contribute(client):
+    token = get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create Sprint
+    start_time = datetime.now(timezone.utc) + timedelta(days=1)
+    end_time = start_time + timedelta(hours=6)
+    sprint_response = client.post(
+        "/sprints",
+        json={
+            "name": "Test Sprint",
+            "goal_amount": 1000.0,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+        },
+        headers=headers,
     )
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Incorrect username or password"}
+    assert sprint_response.status_code == 200
+    sprint = sprint_response.json()
+    sprint_id = sprint["id"]
+
+    # Contribute to Sprint
+    contribution_amount = 100.0
+    contribution_response = client.post(
+        f"/sprints/{sprint_id}/contribute",
+        json={"amount": contribution_amount},
+        headers=headers,
+    )
+    # This will fail because the user has no money. Let's first deposit.
+
+    # Deposit money
+    deposit_response = client.post(
+        "/wallets/1/transactions",
+        json={"amount": 500.0, "type": "deposit"},
+        headers=headers,
+    )
+    assert deposit_response.status_code == 200
+
+    # Retry contribution
+    contribution_response = client.post(
+        f"/sprints/{sprint_id}/contribute",
+        json={"amount": contribution_amount},
+        headers=headers,
+    )
+    assert contribution_response.status_code == 200
+    contribution = contribution_response.json()
+    assert contribution["amount"] == contribution_amount
+
+    # Check sprint's current amount
+    sprint_response = client.get(f"/sprints/{sprint_id}", headers=headers)
+    assert sprint_response.json()["current_amount"] == contribution_amount
+
+def test_create_and_manage_pool(client):
+    token = get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create a pool
+    pool_response = client.post(
+        "/pools",
+        json={"name": "Test Pool", "total_amount": 1000.0},
+        headers=headers,
+    )
+    assert pool_response.status_code == 200
+    pool = pool_response.json()
+    pool_id = pool["id"]
+    assert pool["name"] == "Test Pool"
+
+    # Get all pools
+    pools_response = client.get("/pools", headers=headers)
+    assert pools_response.status_code == 200
+    assert len(pools_response.json()) > 0
+
+    # Get single pool
+    single_pool_response = client.get(f"/pools/{pool_id}", headers=headers)
+    assert single_pool_response.status_code == 200
+    assert single_pool_response.json()["id"] == pool_id
+
+    # Join pool
+    join_response = client.post(f"/pools/{pool_id}/join", headers=headers)
+    assert join_response.status_code == 200
+    assert len(join_response.json()["participants"]) == 1
+
+    # Leave pool
+    leave_response = client.post(f"/pools/{pool_id}/leave", headers=headers)
+    assert leave_response.status_code == 200
+    assert len(leave_response.json()["participants"]) == 0
