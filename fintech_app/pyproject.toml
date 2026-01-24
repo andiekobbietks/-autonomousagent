@@ -12,6 +12,9 @@ uvicorn = "^0.24.0.post1"
 pydantic = "^2.5.2"
 python-dotenv = "^1.0.0"
 restack-ai = "^0.0.52"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+bcrypt = "==3.2.0"
 
 [build-system]
 requires = ["poetry-core"]
